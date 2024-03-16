@@ -206,6 +206,7 @@ def main_worker(gpu, ngpus_per_node, args):
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
+
     # define loss function (criterion), optimizer, and learning rate scheduler
     criterion = nn.CrossEntropyLoss().to(device)
 
@@ -239,7 +240,6 @@ def main_worker(gpu, ngpus_per_node, args):
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
 
-
     # Data loading code
     if args.dummy:
         print("=> Dummy data is used!")
@@ -250,7 +250,7 @@ def main_worker(gpu, ngpus_per_node, args):
         traindir = os.path.join(args.data, 'train')
         valdir = os.path.join(args.data, 'val')
         normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
+                                         std=[0.229, 0.224, 0.225])
 
         train_dataset = datasets.ImageFolder(
             traindir,

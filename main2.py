@@ -6,6 +6,7 @@ import time
 import warnings
 import wandb
 import hydra
+import logging
 from enum import Enum
 from omegaconf import DictConfig
 
@@ -23,6 +24,11 @@ import torchvision.models as models
 import torchvision.transforms as transforms
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import Subset
+
+import custom_models
+
+# A logger for this file
+log = logging.getLogger(__name__)
 
 
 # parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
@@ -83,15 +89,24 @@ best_acc1 = 0
 
 @hydra.main(version_base=None, config_path='./configs', config_name='resnet152')
 def main(config: DictConfig) -> None:
+    log.info(f'Start training for {config.name}.')
 
     model_names = sorted(name for name in models.__dict__
                          if name.islower() and not name.startswith("__")
                          and callable(models.__dict__[name]))
+    model_names += list(custom_models.models.keys())
+
     if config.arch not in model_names:
         print("[Error] Possible arch: ", model_names)
         quit()
 
     args = config
+
+    print(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
+    # These hydra variables are the ones that needs to be resolved.
+    # These don't seem to work with multiprocessing spawning
+    name = args.name
+    output_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -120,10 +135,7 @@ def main(config: DictConfig) -> None:
     else:
         ngpus_per_node = 1
 
-    wandb.init(
-        project='imagenet',
-        name=config.arch,
-    )
+    log.info(args.name)
 
     if args.multiprocessing_distributed:
         # Since we have ngpus_per_node processes per node, the total world_size
@@ -131,13 +143,15 @@ def main(config: DictConfig) -> None:
         args.world_size = ngpus_per_node * args.world_size
         # Use torch.multiprocessing.spawn to launch distributed processes: the
         # main_worker process function
-        mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, args))
+        mp.spawn(main_worker,
+                 nprocs=ngpus_per_node,
+                 args=(ngpus_per_node, args, name, output_dir))
     else:
         # Simply call main_worker function
-        main_worker(args.gpu, ngpus_per_node, args)
+        main_worker(args.gpu, ngpus_per_node, args, name, output_dir)
 
 
-def main_worker(gpu, ngpus_per_node, args):
+def main_worker(gpu, ngpus_per_node, args, name, output_dir):
     global best_acc1
     args.gpu = gpu
 
@@ -160,6 +174,7 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         print("=> creating model '{}'".format(args.arch))
         model = models.__dict__[args.arch]()
+        # model = custom_models.models[args.arch]()
 
     if not torch.cuda.is_available() and not torch.backends.mps.is_available():
         print('using CPU, this will be slow')
@@ -240,12 +255,14 @@ def main_worker(gpu, ngpus_per_node, args):
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
 
+    image_size = 224
+
     # Data loading code
     if args.dummy:
         print("=> Dummy data is used!")
         # train_dataset = datasets.FakeData(1281167, (3, 224, 224), 1000, transforms.ToTensor())
-        train_dataset = datasets.FakeData(1167, (3, 224, 224), 1000, transforms.ToTensor())
-        val_dataset = datasets.FakeData(500, (3, 224, 224), 1000, transforms.ToTensor())
+        train_dataset = datasets.FakeData(1167, (3, image_size, image_size), 1000, transforms.ToTensor())
+        val_dataset = datasets.FakeData(500, (3, image_size, image_size), 1000, transforms.ToTensor())
     else:
         traindir = os.path.join(args.data, 'train')
         valdir = os.path.join(args.data, 'val')
@@ -255,7 +272,7 @@ def main_worker(gpu, ngpus_per_node, args):
         train_dataset = datasets.ImageFolder(
             traindir,
             transforms.Compose([
-                transforms.RandomResizedCrop(224),
+                transforms.RandomResizedCrop(image_size),
                 transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
                 normalize,
@@ -265,7 +282,7 @@ def main_worker(gpu, ngpus_per_node, args):
             valdir,
             transforms.Compose([
                 transforms.Resize(256),
-                transforms.CenterCrop(224),
+                transforms.CenterCrop(image_size),
                 transforms.ToTensor(),
                 normalize,
             ]))
@@ -289,6 +306,14 @@ def main_worker(gpu, ngpus_per_node, args):
         validate(val_loader, model, criterion, args)
         return
 
+    # Initialize wandb before training
+    if not args.multiprocessing_distributed or (args.multiprocessing_distributed
+            and args.rank % ngpus_per_node == 0):
+        wandb.init(
+            project='imagenet',
+            name=name,
+        )
+
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
@@ -298,7 +323,10 @@ def main_worker(gpu, ngpus_per_node, args):
 
         # evaluate on validation set
         val_metric = validate(val_loader, model, criterion, args)
-        wandb.log({**train_metric, **val_metric}, step=epoch)
+
+        if not args.multiprocessing_distributed or (args.multiprocessing_distributed
+                and args.rank % ngpus_per_node == 0):
+            wandb.log({**train_metric, **val_metric}, step=epoch)
 
         scheduler.step()
 
@@ -306,6 +334,9 @@ def main_worker(gpu, ngpus_per_node, args):
         acc1 = val_metric['top1']
         is_best = acc1 > best_acc1
         best_acc1 = max(acc1, best_acc1)
+
+        # print('a: ', args.output_dir)
+        # print('b: ', hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
 
         if not args.multiprocessing_distributed or (args.multiprocessing_distributed
                 and args.rank % ngpus_per_node == 0):
@@ -316,7 +347,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 'best_acc1': best_acc1,
                 'optimizer' : optimizer.state_dict(),
                 'scheduler' : scheduler.state_dict()
-            }, is_best, args.arch)
+            }, is_best, args.arch, output_dir)
 
 
 def train(train_loader, model, criterion, optimizer, epoch, device, args):
@@ -434,11 +465,11 @@ def validate(val_loader, model, criterion, args):
             'top5': top5.avg,
             }
 
-def save_checkpoint(state, is_best, prefix):
-    filename = f'{prefix}-checkpoint.pth.tar'
+def save_checkpoint(state, is_best, prefix, out_dir='.'):
+    filename = f'{out_dir}/{prefix}-checkpoint.pth.tar'
     torch.save(state, filename)
     if is_best:
-        shutil.copyfile(filename, f'{prefix}-model_best.pth.tar')
+        shutil.copyfile(filename, f'{out_dir}/{prefix}-model_best.pth.tar')
 
 class Summary(Enum):
     NONE = 0

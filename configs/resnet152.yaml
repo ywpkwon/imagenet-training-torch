@@ -8,18 +8,38 @@ weight_decay: 1e-4
 print_freq: 10
 resume: ''
 pretrained: false
+description: ''
+name: ${now:%Y-%m-%d-%H-%M-%S}-${arch}${description}
 
 evaluate: false
 
 workers: 4
-world_size: -1
-rank: -1
-dist_url: 'tcp://224.66.41.62:23456'
-dist_backend: nccl
+# world_size: -1
+# rank: -1
+# dist_url: 'tcp://224.66.41.62:23456'
+# dist_backend: nccl
+#
+#
+world_size: ???
+rank: ???
+dist_url: 'env://'
+dist_backend: ???
+
+#
 seed: null
 gpu: null
-multiprocessing_distributed: false
+# multiprocessing_distributed: false
 dummy: false
 
-distributed: ???
+device: cuda
 
+# this attribute will be determined in run time
+distributed: ???
+output_dir: ???    # multi processing
+
+# hydra setup
+hydra:
+  run:
+    # dir: ./outputs/${now:%Y-%m-%d-%H-%M-%S}-${arch}${description}
+    dir: ./outputs/${name}
+  output_subdir: .
